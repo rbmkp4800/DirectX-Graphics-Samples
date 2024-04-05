@@ -15,12 +15,20 @@ struct PSInput
     float4 color : COLOR;
 };
 
+cbuffer MyConstants : register(b0)
+{
+	float4 c_MyValue;
+}
+
 PSInput VSMain(float4 position : POSITION, float4 color : COLOR)
 {
     PSInput result;
 
     result.position = position;
     result.color = color;
+
+    // To check behaviour without root signature access comment next line.
+    result.color *= c_MyValue;
 
     return result;
 }

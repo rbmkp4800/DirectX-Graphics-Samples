@@ -270,8 +270,11 @@ void D3D12HelloGenericPrograms::LoadAssets()
 {
     // Create an empty root signature.
     {
+        CD3DX12_ROOT_PARAMETER rootParameters[1];
+        rootParameters[0].InitAsConstantBufferView(0);
+
         CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-        rootSignatureDesc.Init(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+        rootSignatureDesc.Init(_countof(rootParameters), rootParameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
         ComPtr<ID3DBlob> signature;
         ComPtr<ID3DBlob> error;
@@ -279,7 +282,6 @@ void D3D12HelloGenericPrograms::LoadAssets()
         ThrowIfFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature)));
     }
 
-    // Create a generic program (like a PSO) in a state object, including first compiling shaders
     {
         ComPtr<ID3DBlob> vertexShader;
         ComPtr<ID3DBlob> pixelShader;
@@ -287,6 +289,40 @@ void D3D12HelloGenericPrograms::LoadAssets()
         ThrowIfFailed(CompileDxilLibraryFromFile(GetAssetFullPath(L"shaders.hlsl").c_str(), L"VSMain", L"vs_6_0", nullptr, 0, &vertexShader));
         ThrowIfFailed(CompileDxilLibraryFromFile(GetAssetFullPath(L"shaders.hlsl").c_str(), L"PSMain", L"ps_6_0", nullptr, 0, &pixelShader));
 
+        CD3DX12_STATE_OBJECT_DESC SODesc;
+        SODesc.SetStateObjectType(D3D12_STATE_OBJECT_TYPE_COLLECTION);
+
+        // Optional flag to allow state object additions
+        auto pConfig = SODesc.CreateSubobject<CD3DX12_STATE_OBJECT_CONFIG_SUBOBJECT>();
+        pConfig->SetFlags(D3D12_STATE_OBJECT_FLAG_ALLOW_STATE_OBJECT_ADDITIONS);
+
+        auto pRootSig = SODesc.CreateSubobject<CD3DX12_GLOBAL_ROOT_SIGNATURE_SUBOBJECT>();
+        pRootSig->SetRootSignature(m_rootSignature.Get());
+        auto pVS = SODesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
+        CD3DX12_SHADER_BYTECODE bcVS(vertexShader.Get());
+        pVS->SetDXILLibrary(&bcVS);
+        pVS->DefineExport(L"myRenamedVS", L"*"); // Take whatever the shader is and rename it to myVS.  Instead of "*" could have used the actual name of the shader.
+        // Also could have omitted this line completely, which would just import all exports in the binary (just one shader here), 
+        // using the name of the shader in the lib. Could also have listed the name of the shader in the lib on its own for the same effect
+        // (would ensure that the shader you are expecting is actually there)
+
+        // We may try to add explicit association subobject but it does not change the behaviour :(
+#if 0
+        auto pExplicitAssociation = SODesc.CreateSubobject<CD3DX12_SUBOBJECT_TO_EXPORTS_ASSOCIATION_SUBOBJECT>();
+        pExplicitAssociation->SetSubobjectToAssociate(*pRootSig);
+        pExplicitAssociation->AddExport(L"myRenamedVS");
+#endif
+
+        auto pPS = SODesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
+        CD3DX12_SHADER_BYTECODE bcPS(pixelShader.Get());
+        pPS->SetDXILLibrary(&bcPS); // by not listing exports, just taking whatever is in the library
+
+        // D3D12 ERROR: ID3D12Device::CreateStateObject: Resource bindings for function "myRenamedVS" not compatible with associated root signatures (if any): local root signature object: 0x0000000000000000:'(nullptr)', global root signature object: 0x0000000000000000:'(nullptr)'. Error detail: Shader CBV descriptor range (BaseShaderRegister=0, NumDescriptors=1, RegisterSpace=0) is not fully bound in root signature. If the intent is this will be resolved later when this state object is combined with other state object(s), use a D3D12_STATE_OBJECT_CONFIG subobject with D3D12_STATE_OBJECT_FLAG_ALLOW_LOCAL_DEPENDENCIES_ON_EXTERNAL_DEFINITIONS set in Flags. [ STATE_CREATION ERROR #1194: CREATE_STATE_OBJECT_ERROR]
+        ThrowIfFailed(m_device->CreateStateObject(SODesc, IID_PPV_ARGS(&m_collectionStateObject)));
+    }
+
+    // Create a generic program (like a PSO) in a state object, including first compiling shaders
+    {
         // Define the vertex input layout.
         D3D12_INPUT_ELEMENT_DESC inputElementDescs[] =
         {
@@ -330,17 +366,6 @@ void D3D12HelloGenericPrograms::LoadAssets()
         }
         auto pRootSig = SODesc.CreateSubobject<CD3DX12_GLOBAL_ROOT_SIGNATURE_SUBOBJECT>();
         pRootSig->SetRootSignature(m_rootSignature.Get());
-        auto pVS = SODesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
-        CD3DX12_SHADER_BYTECODE bcVS(vertexShader.Get());
-        pVS->SetDXILLibrary(&bcVS);
-        pVS->DefineExport(L"myRenamedVS", L"*"); // Take whatever the shader is and rename it to myVS.  Instead of "*" could have used the actual name of the shader.
-                                          // Also could have omitted this line completely, which would just import all exports in the binary (just one shader here), 
-                                          // using the name of the shader in the lib. Could also have listed the name of the shader in the lib on its own for the same effect
-                                          // (would ensure that the shader you are expecting is actually there)
-
-        auto pPS = SODesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
-        CD3DX12_SHADER_BYTECODE bcPS(pixelShader.Get());
-        pPS->SetDXILLibrary(&bcPS); // by not listing exports, just taking whatever is in the library
 
         // Don't need to add the following descs since they're all just default
         //auto pRast = SODesc.CreateSubobject<CD3DX12_RASTERIZER_SUBOBJECT>();
@@ -357,6 +382,11 @@ void D3D12HelloGenericPrograms::LoadAssets()
         // Then define a generic program out of the building blocks:  name, list of shaders, list of subobjects:
         // (Can define multiple generic programs in the same state object, each picking the building blocks it wants)
 
+        auto pShadersCollection = SODesc.CreateSubobject<CD3DX12_EXISTING_COLLECTION_SUBOBJECT>();
+        pShadersCollection->SetExistingCollection(m_collectionStateObject.Get());
+        pShadersCollection->DefineExport(L"myRenamedVS");
+        pShadersCollection->DefineExport(L"PSMain");
+
         auto pGenericProgram = SODesc.CreateSubobject<CD3DX12_GENERIC_PROGRAM_SUBOBJECT>();
         pGenericProgram->SetProgramName(L"myGenericProgram");
         pGenericProgram->AddExport(L"myRenamedVS");
@@ -368,6 +398,7 @@ void D3D12HelloGenericPrograms::LoadAssets()
         // shader exports directly, not programs.  The single root sig in the state objcet above with no associations defined automatically
         // becomes a default root sig that applies to all exports, so myVS and myPS get it.
 
+        // *** nullptr access violation inside this call ***
         ThrowIfFailed(m_device->CreateStateObject(SODesc, IID_PPV_ARGS(&m_stateObject[0])));
 
         ComPtr<ID3D12StateObjectProperties1> pSOProperties;

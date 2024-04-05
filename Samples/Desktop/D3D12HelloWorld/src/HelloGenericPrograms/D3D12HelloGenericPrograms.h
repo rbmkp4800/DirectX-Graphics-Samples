@@ -51,6 +51,7 @@ private:
     ComPtr<ID3D12CommandQueue> m_commandQueue;
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
+    ComPtr<ID3D12StateObject> m_collectionStateObject;
     ComPtr<ID3D12StateObject> m_stateObject[2];
     D3D12_PROGRAM_IDENTIFIER m_genericProgram[2];
     ComPtr<ID3D12GraphicsCommandList10> m_commandList;
